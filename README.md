@@ -22,6 +22,8 @@ To stop the server, press `Ctrl+C` in the terminal running `npm start`. To resta
 
 ## Deploy (Vercel)
 
+Live at https://clock.chinmayraj.tech. The Vercel project is connected to this GitHub repo: pushes to `master` deploy to production, and other branches get preview URLs. To deploy by hand anyway, run:
+
 ```bash
 npx vercel deploy --prod
 ```
