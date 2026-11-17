@@ -154,3 +154,7 @@ A few details worth knowing:
 ## Credits
 
 Weather by [Open-Meteo](https://open-meteo.com) (CC BY 4.0). City names by [BigDataCloud](https://www.bigdatacloud.com). IP-based location by [GeoJS](https://www.geojs.io). Weather icons are adapted from [Lucide](https://lucide.dev) (ISC). The [Geist](https://vercel.com/font) font is under the SIL Open Font License.
+
+## License
+
+[MIT](LICENSE). Use it, fork it, put it on your own spare screen.
