@@ -1,6 +1,20 @@
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { upcoming } from "./ics";
+import { NextResponse, type NextRequest } from "next/server";
+import { upcoming, type CalEvent } from "./ics";
+import {
+  OAuthError,
+  PROVIDERS,
+  PROVIDER_NAMES,
+  SESSION_MAX_AGE,
+  cookieOptions,
+  credentials,
+  providerEvents,
+  refresh,
+  sessionCookie,
+  type ProviderName,
+} from "../connect/providers";
+import { seal, unseal } from "../connect/seal";
 
 // Server-side proxy because calendar feeds don't send CORS headers.
 // The feed URL is a secret, so it travels in the POST body (never the query string / logs).
@@ -69,18 +83,63 @@ async function fetchFeed(raw: string): Promise<string> {
   throw new Error("Too many redirects");
 }
 
-export async function POST(req: Request) {
+const HOUR = 3_600_000;
+const startKey = (e: CalEvent) => (e.allDay ? Date.parse(e.startDay) : e.start);
+
+/**
+ * POST /api/calendar { url? } → upcoming events from the pasted iCal feed (if any)
+ * plus every calendar account connected in this browser (sealed cookies).
+ */
+export async function POST(req: NextRequest) {
   let url: unknown;
   try {
     ({ url } = await req.json());
   } catch {}
-  if (typeof url !== "string" || url.length > 2048) return Response.json({ error: "Missing calendar address" }, { status: 400 });
+  if (url != null && (typeof url !== "string" || url.length > 2048)) return Response.json({ error: "Invalid calendar address" }, { status: 400 });
 
-  try {
-    const events = upcoming(await fetchFeed(url), Date.now());
-    return Response.json({ events }, { headers: { "cache-control": "no-store" } });
-  } catch (e) {
-    const message = e instanceof TypeError && e.message === "Invalid URL" ? "That isn't a valid address" : (e as Error).message;
-    return Response.json({ error: message || "Couldn't load calendar" }, { status: 400 });
+  const now = Date.now();
+  const from = new Date(now - 12 * HOUR); // the browser decides what's "now" and "today" locally
+  const to = new Date(now + 36 * HOUR);
+  const events: CalEvent[] = [];
+  const errors: string[] = [];
+  const connected: Partial<Record<ProviderName, boolean>> = {};
+  const available: Partial<Record<ProviderName, boolean>> = {};
+  const rotated: [ProviderName, string | null][] = [];
+
+  const sources: Promise<void>[] = PROVIDER_NAMES.map(async (p) => {
+    available[p] = !!credentials(p);
+    const session = unseal<{ refresh: string }>(sessionCookie(p), req.cookies.get(sessionCookie(p))?.value);
+    connected[p] = !!session;
+    if (!session || !available[p]) return;
+    try {
+      const t = await refresh(p, session.refresh);
+      if (t.refresh !== session.refresh) rotated.push([p, t.refresh]);
+      events.push(...(await providerEvents(p, t.access, from, to)));
+    } catch (e) {
+      if (e instanceof OAuthError && e.code === "invalid_grant") {
+        connected[p] = false; // revoked or expired: drop the dead cookie
+        rotated.push([p, null]);
+        errors.push(`${PROVIDERS[p].label} was disconnected, connect it again`);
+      } else errors.push(`${PROVIDERS[p].label}: ${(e as Error).message}`);
+    }
+  });
+
+  if (typeof url === "string" && url.trim()) {
+    sources.push(
+      fetchFeed(url)
+        .then((text) => void events.push(...upcoming(text, now)))
+        .catch((e) => void errors.push(e instanceof TypeError && e.message === "Invalid URL" ? "That isn't a valid address" : (e as Error).message)),
+    );
   }
+  await Promise.all(sources);
+
+  const res = NextResponse.json(
+    { events: events.sort((a, b) => startKey(a) - startKey(b)).slice(0, 40), connected, available, error: errors[0] },
+    { headers: { "cache-control": "no-store" } },
+  );
+  for (const [p, refreshToken] of rotated) {
+    if (refreshToken) res.cookies.set(sessionCookie(p), seal(sessionCookie(p), { refresh: refreshToken }), cookieOptions(req, SESSION_MAX_AGE));
+    else res.cookies.delete(sessionCookie(p));
+  }
+  return res;
 }

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { config, type Place } from "./config";
 import type { CalEvent } from "./api/calendar/ics";
+import * as spotify from "./spotify";
 
 type Weather = {
   temp: number;
@@ -16,12 +17,13 @@ type Weather = {
   hourly: { time: number[]; temp: number[] };
 };
 type Cached = { place: Place; weather: Weather; at: number };
-type Prefs = { hour12?: boolean; units?: "C" | "F"; hidden?: string[]; ics?: string };
+type Prefs = { hour12?: boolean; units?: "C" | "F"; hidden?: string[]; ics?: string; spotifyClientId?: string };
 
 const WIDGETS = [
   ["seconds", "Seconds"],
   ["date", "Date"],
   ["calendar", "Calendar"],
+  ["music", "Spotify"],
   ["weather", "Weather"],
   ["hours", "Next hours"],
   ["sun", "Sunrise & sunset"],
@@ -165,17 +167,34 @@ function useWeather(enabled: boolean) {
 // ---------- calendar (ICS feed fetched through /api/calendar) ----------
 const CALENDAR_REFRESH_MS = 10 * 60_000;
 
-function useCalendar(url: string | undefined) {
-  const [state, setState] = useState<{ events: CalEvent[]; error?: string }>({ events: [] });
+type Accounts = { google?: boolean; microsoft?: boolean };
+type CalendarState = { events: CalEvent[]; error?: string; connected: Accounts; available: Accounts };
+
+// One request covers the pasted iCal feed and every account connected in this browser (httpOnly cookies).
+function useCalendar(enabled: boolean, url: string | undefined) {
+  const [state, setState] = useState<CalendarState>({ events: [], connected: {}, available: {} });
+  const [reload, setReload] = useState(0);
+
+  // coming back from a Google/Microsoft consent screen: show any error, clean the address bar
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const error = params.get("calendar_error");
+    if (!params.has("calendar") && !error) return;
+    history.replaceState(null, "", location.pathname);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reading the one-off redirect result
+    if (error) setState((s) => ({ ...s, error }));
+  }, []);
 
   useEffect(() => {
-    if (!url) return;
+    if (!enabled) return;
     let alive = true;
     const load = async () => {
       try {
-        const res = await fetch("/api/calendar", { method: "POST", body: JSON.stringify({ url }) });
+        const res = await fetch("/api/calendar", { method: "POST", body: JSON.stringify({ url: url || null }) });
         const body = await res.json();
-        if (alive) setState(res.ok ? { events: body.events } : (s) => ({ events: s.events, error: body.error }));
+        if (!alive) return;
+        if (res.ok) setState({ events: body.events, error: body.error, connected: body.connected, available: body.available });
+        else setState((s) => ({ ...s, error: body.error }));
       } catch {
         if (alive) setState((s) => ({ ...s, error: "Offline, showing last events" }));
       }
@@ -186,9 +205,67 @@ function useCalendar(url: string | undefined) {
       alive = false;
       clearInterval(id);
     };
-  }, [url]);
+  }, [enabled, url, reload]);
 
-  return url ? state : { events: [] as CalEvent[] };
+  const disconnect = async (provider: keyof Accounts) => {
+    await fetch(`/api/connect/${provider}`, { method: "POST" }).catch(() => {});
+    setReload((n) => n + 1);
+  };
+
+  return { ...state, events: enabled ? state.events : [], disconnect };
+}
+
+// ---------- Spotify now playing ----------
+const SPOTIFY_POLL_MS = 5000;
+
+function useSpotify(enabled: boolean) {
+  const [connected, setConnected] = useState(false);
+  const [track, setTrack] = useState<spotify.NowPlaying>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [refetch, setRefetch] = useState(0);
+
+  // finish the sign-in redirect (if any) and read the stored session, once
+  useEffect(() => {
+    spotify.finishConnect().then((err) => {
+      setError(err);
+      setConnected(spotify.isConnected());
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!enabled || !connected) return;
+    let alive = true;
+    const poll = async () => {
+      if (document.visibilityState !== "visible") return;
+      try {
+        const np = await spotify.nowPlaying();
+        if (alive) setTrack(np);
+      } catch (e) {
+        if (!alive) return;
+        setConnected(spotify.isConnected()); // a revoked refresh token signs us out
+        setError((e as Error).message);
+      }
+    };
+    poll();
+    const id = setInterval(poll, SPOTIFY_POLL_MS);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [enabled, connected, refetch]);
+
+  const send = async (cmd: spotify.Command) => {
+    if (cmd === "play" || cmd === "pause") setTrack((t) => t && { ...t, playing: cmd === "play" }); // optimistic
+    setError(await spotify.control(cmd).catch((e: Error) => e.message));
+    setTimeout(() => setRefetch((n) => n + 1), 400);
+  };
+  const disconnect = () => {
+    spotify.disconnect();
+    setConnected(false);
+    setTrack(null);
+  };
+
+  return { connected, track: connected && enabled ? track : null, error, send, disconnect };
 }
 
 const localDay = (t: number) => {
@@ -267,6 +344,10 @@ const ICONS: Record<string, string> = {
   sunrise: "M12 2v8M4.9 10.9l1.4 1.4M2 18h2M20 18h2M19.1 10.9l-1.4 1.4M22 22H2M8 6l4-4 4 4M16 18a4 4 0 0 0-8 0",
   sunset: "M12 10V2M4.9 10.9l1.4 1.4M2 18h2M20 18h2M19.1 10.9l-1.4 1.4M22 22H2M16 6l-4 4-4-4M16 18a4 4 0 0 0-8 0",
   sliders: "M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4",
+  play: "M7 4.5v15l12-7.5z",
+  pause: "M8 5v14M16 5v14",
+  previous: "M18 5v14L8 12zM6 5v14",
+  next: "M6 5v14l10-7zM18 5v14",
 };
 function Icon({ name, className }: { name: string; className?: string }) {
   return (
@@ -298,7 +379,9 @@ export default function Dashboard() {
   const show = (k: Widget) => !prefs.hidden?.includes(k);
   // wait for stored prefs before fetching, so hidden weather never triggers a location prompt
   const { data, failed } = useWeather(prefs !== NO_PREFS && (show("weather") || show("hours") || show("sun")));
-  const calendar = useCalendar(show("calendar") ? prefs.ics : undefined);
+  const calendar = useCalendar(prefs !== NO_PREFS && show("calendar"), prefs.ics);
+  const music = useSpotify(show("music"));
+  const spotifyClientId = prefs.spotifyClientId || config.spotifyClientId;
   const root = useRef<HTMLElement>(null);
 
   // remembered toggles
@@ -320,18 +403,22 @@ export default function Dashboard() {
         : document.documentElement.requestFullscreen?.().catch(() => {}); // iPhone Safari has no element fullscreen
     const onKey = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
-      if (e.target instanceof HTMLInputElement && e.target.type === "url") return; // typing a calendar address
+      if (e.target instanceof HTMLInputElement && e.target.type !== "checkbox") return; // typing in a settings field
       const k = e.key.toLowerCase();
       if (k === "f") fullscreen();
       if (k === "t") setPrefs(toggleHour12);
       if (k === "u") setPrefs(toggleUnits);
       if (k === "s") document.getElementById("settings")?.togglePopover();
     };
+    // double-clicking a control (e.g. "next" twice) shouldn't flip fullscreen
+    const onDblClick = (e: MouseEvent) => {
+      if (!(e.target as Element).closest("button, a, input, label, [popover]")) fullscreen();
+    };
     window.addEventListener("keydown", onKey);
-    window.addEventListener("dblclick", fullscreen);
+    window.addEventListener("dblclick", onDblClick);
     return () => {
       window.removeEventListener("keydown", onKey);
-      window.removeEventListener("dblclick", fullscreen);
+      window.removeEventListener("dblclick", onDblClick);
     };
   }, []);
 
@@ -425,7 +512,33 @@ export default function Dashboard() {
         <div className="my-2 border-t border-white/[0.06]" />
         <Toggle label="24-hour time" checked={!hour12} onChange={() => setPrefs(toggleHour12)} />
         <Toggle label="Fahrenheit" checked={units === "F"} onChange={() => setPrefs(toggleUnits)} />
-        <div className="my-2 border-t border-white/[0.06]" />
+        <div className="my-3 border-t border-white/[0.06]" />
+        <p className={label}>Calendar</p>
+        {(
+          [
+            ["google", "Google Calendar"],
+            ["microsoft", "Outlook"],
+          ] as const
+        )
+          .filter(([p]) => calendar.available[p] || calendar.connected[p])
+          .map(([p, name]) =>
+            calendar.connected[p] ? (
+              <div key={p} className="flex items-center justify-between py-2 text-sm text-white/70">
+                {name}
+                <button type="button" onClick={() => calendar.disconnect(p)} className="text-xs text-white/40 hover:text-white/80">
+                  Disconnect
+                </button>
+              </div>
+            ) : (
+              <a
+                key={p}
+                href={`/api/connect/${p}`}
+                className="mt-2 block w-full rounded-lg bg-white/[0.07] py-2 text-center text-sm text-white/80 hover:bg-white/[0.12]"
+              >
+                Connect {name}
+              </a>
+            ),
+          )}
         <form
           // remount when the stored value loads/changes so the uncontrolled input shows it
           key={prefs.ics ?? ""}
@@ -435,8 +548,8 @@ export default function Dashboard() {
             setPrefs((p) => ({ ...p, ics }));
           }}
         >
-          <label className="block pt-1">
-            <span className={label}>Calendar address (iCal)</span>
+          <label className="block pt-3">
+            <span className="text-[0.7rem] text-white/40">Or paste an iCal address (Apple Calendar, anything else)</span>
             <input
               name="ics"
               type="url"
@@ -451,12 +564,61 @@ export default function Dashboard() {
         </form>
         {calendar.error && <p className="mt-1.5 text-xs text-amber-200/60">{calendar.error}</p>}
         <p className="mt-1.5 text-[0.7rem] leading-relaxed text-white/30">
-          Google Calendar: Settings › your calendar › &ldquo;Secret address in iCal format&rdquo;.
-          <br />
-          Outlook: Settings › Calendar › Shared calendars › Publish › ICS.
+          Apple Calendar: share the calendar publicly and copy its webcal:// link.
         </p>
-        <p className="mt-3 text-[0.7rem] leading-relaxed text-white/25">
-          Saved in this browser. The calendar address goes to this site&rsquo;s server only to fetch the feed and isn&rsquo;t stored.
+        <div className="my-3 border-t border-white/[0.06]" />
+        <p className={label}>Spotify</p>
+        {music.connected ? (
+          <div className="flex items-center justify-between py-2 text-sm text-white/70">
+            Connected
+            <button type="button" onClick={music.disconnect} className="text-xs text-white/40 hover:text-white/80">
+              Disconnect
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            disabled={!spotifyClientId}
+            onClick={() => spotify.connect(spotifyClientId)}
+            className="mt-2 w-full rounded-lg bg-white/[0.07] py-2 text-sm text-white/80 hover:bg-white/[0.12] disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Connect Spotify
+          </button>
+        )}
+        {music.error && <p className="mt-1.5 text-xs text-amber-200/60">{music.error}</p>}
+        <details className="mt-2 text-[0.7rem] leading-relaxed text-white/30">
+          <summary className="cursor-pointer hover:text-white/50">Use your own Spotify app</summary>
+          <p className="mt-1.5">
+            Spotify lets each personal app sign in only 5 accounts. If Connect fails, create an app at developer.spotify.com with
+            redirect URI <code className="text-white/50">{ready ? `${location.origin}/` : ""}</code> and paste its Client ID:
+          </p>
+          <form
+            key={prefs.spotifyClientId ?? ""}
+            onSubmit={(e) => {
+              e.preventDefault();
+              const id = (new FormData(e.currentTarget).get("cid") as string).trim() || undefined;
+              setPrefs((p) => ({ ...p, spotifyClientId: id }));
+            }}
+          >
+            <input
+              name="cid"
+              type="text"
+              inputMode="text"
+              defaultValue={prefs.spotifyClientId}
+              onBlur={(e) => e.currentTarget.form?.requestSubmit()}
+              placeholder="Client ID"
+              autoComplete="off"
+              spellCheck={false}
+              className="mt-2 w-full rounded-lg bg-white/[0.05] px-3 py-2 font-mono text-xs text-white/80 outline-none placeholder:text-white/20 focus:ring-1 focus:ring-white/20"
+            />
+          </form>
+        </details>
+        <p className="mt-4 text-[0.7rem] leading-relaxed text-white/25">
+          Everything stays on this device: settings in the browser, calendar sign-ins in an encrypted cookie. Nothing is stored on
+          the server.{" "}
+          <a href="/privacy" className="underline decoration-white/20 underline-offset-2 hover:text-white/60">
+            Privacy
+          </a>
         </p>
       </div>
       <div
@@ -491,6 +653,26 @@ export default function Dashboard() {
               <span className={`truncate ${agenda.soon ? "text-white/80" : "text-white/55"}`}>{agenda.title}</span>
               <span className="shrink-0 text-white/30">{agenda.when}</span>
             </p>
+          )}
+          {music.track && (
+            <div className="mt-[1.4vh] flex max-w-full items-center gap-[0.7em] text-[clamp(0.85rem,1.3vw,1.5rem)] font-light">
+              {music.track.art && (
+                // eslint-disable-next-line @next/next/no-img-element -- tiny remote cover; image optimization isn't worth it
+                <img src={music.track.art} alt="" className={`size-[1.9em] shrink-0 rounded-[0.3em] ${music.track.playing ? "opacity-80" : "opacity-35"}`} />
+              )}
+              <a href={music.track.url} target="_blank" rel="noreferrer" className="min-w-0 truncate outline-none">
+                <span className={music.track.playing ? "text-white/75" : "text-white/40"}>{music.track.title}</span>
+                <span className="text-white/30"> · {music.track.artist}</span>
+              </a>
+              {/* controls fade out with the cursor; a tap brings them back */}
+              <span className="flex shrink-0 items-center text-white/45 transition-opacity duration-700 group-data-idle:pointer-events-none group-data-idle:opacity-0">
+                {(["previous", music.track.playing ? "pause" : "play", "next"] as const).map((cmd) => (
+                  <button key={cmd} type="button" aria-label={cmd} onClick={() => music.send(cmd)} className="rounded-full p-[0.35em] outline-none hover:text-white/90 focus-visible:text-white/90">
+                    <Icon name={cmd} className="size-[0.95em]" />
+                  </button>
+                ))}
+              </span>
+            </div>
           )}
         </section>
 

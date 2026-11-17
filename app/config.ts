@@ -11,4 +11,8 @@ export const config = {
   hour12: "auto" as "auto" | boolean, // "auto" follows the system/browser locale
 
   accent: "#8ab4f8",
+
+  // Client ID of your Spotify app (public by design: sign-in uses PKCE, no secret).
+  // Spotify limits personal apps to 5 allowlisted accounts; other visitors can paste their own Client ID in Settings.
+  spotifyClientId: "",
 };
