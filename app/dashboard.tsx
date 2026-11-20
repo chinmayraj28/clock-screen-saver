@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { config, type Place } from "./config";
 import type { CalEvent } from "./api/calendar/ics";
 import * as spotify from "./spotify";
+import { FocusLine, FocusPanel, useFocus } from "./focus-ui";
 
 type Weather = {
   temp: number;
@@ -24,6 +25,7 @@ const WIDGETS = [
   ["date", "Date"],
   ["calendar", "Calendar"],
   ["music", "Spotify"],
+  ["focus", "Focus timer"],
   ["weather", "Weather"],
   ["hours", "Next hours"],
   ["sun", "Sunrise & sunset"],
@@ -344,6 +346,7 @@ const ICONS: Record<string, string> = {
   sunrise: "M12 2v8M4.9 10.9l1.4 1.4M2 18h2M20 18h2M19.1 10.9l-1.4 1.4M22 22H2M8 6l4-4 4 4M16 18a4 4 0 0 0-8 0",
   sunset: "M12 10V2M4.9 10.9l1.4 1.4M2 18h2M20 18h2M19.1 10.9l-1.4 1.4M22 22H2M16 6l-4 4-4-4M16 18a4 4 0 0 0-8 0",
   sliders: "M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4",
+  timer: "M10 2h4M12 14l3-3M12 22a8 8 0 1 0 0-16 8 8 0 0 0 0 16z",
   play: "M7 4.5v15l12-7.5z",
   pause: "M8 5v14M16 5v14",
   previous: "M18 5v14L8 12zM6 5v14",
@@ -381,6 +384,9 @@ export default function Dashboard() {
   const { data, failed } = useWeather(prefs !== NO_PREFS && (show("weather") || show("hours") || show("sun")));
   const calendar = useCalendar(prefs !== NO_PREFS && show("calendar"), prefs.ics);
   const music = useSpotify(show("music"));
+  const focus = useFocus(t);
+  // while focusing, everything except the clock and the timer steps back
+  const dim = `transition-opacity duration-1000 ${focus.focusing ? "opacity-25" : ""}`;
   const spotifyClientId = prefs.spotifyClientId || config.spotifyClientId;
   const root = useRef<HTMLElement>(null);
 
@@ -409,6 +415,7 @@ export default function Dashboard() {
       if (k === "t") setPrefs(toggleHour12);
       if (k === "u") setPrefs(toggleUnits);
       if (k === "s") document.getElementById("settings")?.togglePopover();
+      if (k === "p") document.getElementById("focus")?.togglePopover();
     };
     // double-clicking a control (e.g. "next" twice) shouldn't flip fullscreen
     const onDblClick = (e: MouseEvent) => {
@@ -490,7 +497,7 @@ export default function Dashboard() {
       style={{ background: TINT[ready ? phaseOf(t, w) : "night"], "--accent": config.accent } as React.CSSProperties}
     >
       <p className="pointer-events-none fixed top-4 right-5 text-[0.7rem] tracking-wide text-white/25 transition-opacity duration-700 group-data-idle:opacity-0 pointer-coarse:hidden">
-        F / double-click fullscreen · T 12h/24h · U °C/°F · S settings
+        F / double-click fullscreen · T 12h/24h · U °C/°F · S settings · P focus
       </p>
       <button
         type="button"
@@ -500,6 +507,19 @@ export default function Dashboard() {
       >
         <Icon name="sliders" className="size-5" />
       </button>
+      {show("focus") && (
+        <>
+          <button
+            type="button"
+            popoverTarget="focus"
+            aria-label="Focus timer"
+            className="fixed top-2 left-[3.25rem] z-10 rounded-full p-2 text-white/30 transition-opacity duration-700 outline-none hover:text-white/70 focus-visible:text-white/70 group-data-idle:pointer-events-none group-data-idle:opacity-0"
+          >
+            <Icon name="timer" className="size-5" />
+          </button>
+          <FocusPanel focus={focus} />
+        </>
+      )}
       <div
         id="settings"
         popover="auto"
@@ -647,15 +667,16 @@ export default function Dashboard() {
           {show("date") && (
             <p className="mt-[3vh] text-center text-[clamp(1rem,2.4vw,2.8rem)] font-extralight tracking-wide text-white/45">{date}</p>
           )}
+          {show("focus") && <FocusLine focus={focus} />}
           {agenda && (
-            <p className="mt-[1.6vh] flex max-w-full items-center gap-[0.6em] text-[clamp(0.9rem,1.5vw,1.7rem)] font-light">
+            <p className={`mt-[1.6vh] flex max-w-full items-center gap-[0.6em] text-[clamp(0.9rem,1.5vw,1.7rem)] font-light ${dim}`}>
               <span className={`size-[0.4em] shrink-0 rounded-full bg-(--accent) ${agenda.soon ? "opacity-90" : "opacity-40"}`} />
               <span className={`truncate ${agenda.soon ? "text-white/80" : "text-white/55"}`}>{agenda.title}</span>
               <span className="shrink-0 text-white/30">{agenda.when}</span>
             </p>
           )}
           {music.track && (
-            <div className="mt-[1.4vh] flex max-w-full items-center gap-[0.7em] text-[clamp(0.85rem,1.3vw,1.5rem)] font-light">
+            <div className={`mt-[1.4vh] flex max-w-full items-center gap-[0.7em] text-[clamp(0.85rem,1.3vw,1.5rem)] font-light ${dim}`}>
               {music.track.art && (
                 // eslint-disable-next-line @next/next/no-img-element -- tiny remote cover; image optimization isn't worth it
                 <img src={music.track.art} alt="" className={`size-[1.9em] shrink-0 rounded-[0.3em] ${music.track.playing ? "opacity-80" : "opacity-35"}`} />
@@ -677,7 +698,7 @@ export default function Dashboard() {
         </section>
 
         {(["weather", "hours", "sun", "day"] as const).some(show) && (
-        <footer className="grid grid-cols-2 gap-x-[4vw] gap-y-[3vh] border-t border-white/[0.06] pt-[3.5vh] md:grid-flow-col md:grid-cols-none md:auto-cols-fr">
+        <footer className={`grid grid-cols-2 gap-x-[4vw] gap-y-[3vh] border-t border-white/[0.06] pt-[3.5vh] md:grid-flow-col md:grid-cols-none md:auto-cols-fr ${dim}`}>
           {/* weather */}
           {show("weather") && (
           <div className="min-w-0">

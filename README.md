@@ -26,6 +26,7 @@ Most clock websites are noisy, full of ads, or built for a glance. Desk Clock is
 - **Weather where you are.** Current conditions, feels-like, high and low, and the next six hours, from [Open-Meteo](https://open-meteo.com). No API key is needed, and the weather refreshes every 15 minutes. If a fetch fails, the last good data stays on screen with a quiet "stale" note.
 - **Your next meeting.** Sign in with Google Calendar or Outlook, or paste any iCal link (Apple Calendar included), and one quiet line appears under the date: *Design review · in 8 min*.
 - **What's playing.** Connect Spotify to see the current track and its cover, with previous, play/pause and next.
+- **Focus timer.** Sessions of 25, 50 or 90 minutes, or open-ended to track how long you've been locked in. Breaks start on their own: 5 minutes, or 15 after every 4th session. A soft chime marks each change. The tab title counts down, and everything but the clock dims while you work. Today's total, this week, your day streak and a 7-day chart are kept in your browser.
 - **Sunrise, sunset and day progress.** The background tint shifts slowly through dawn, day, dusk and night while staying near-black.
 - **Show only what you want.** Turn seconds, date, calendar, weather, next hours, sun and day progress on or off. Hide every weather widget and the page stops asking for your location.
 - **Made to stay on.**
@@ -46,6 +47,7 @@ Open [clock.chinmayraj.tech](https://clock.chinmayraj.tech) and allow location w
 | --- | --- |
 | `F` or double-click | Toggle fullscreen |
 | `S` or the sliders button (top left) | Settings: show or hide widgets, units, calendar |
+| `P`, the timer button, or click the focus line | Focus timer: start, pause, stop, today/week/streak |
 | `T` or tap the clock | 12h / 24h |
 | `U` or tap the temperature | °C / °F |
 
@@ -167,6 +169,8 @@ app/
   config.ts             defaults: location, units, 12h/24h, accent
   site.ts               name, URL and description used by the metadata
   spotify.ts            Spotify PKCE sign-in, now playing, playback control (browser only)
+  focus.ts              focus timer logic: phases, auto breaks, catch-up, stats (pure)
+  focus-ui.tsx          focus hook, panel, on-screen line, chime
   privacy/page.tsx      privacy policy
   api/calendar/
     route.ts            merges iCal feed + connected accounts; iCal proxy with SSRF guards
@@ -178,7 +182,7 @@ app/
   opengraph-image.tsx   social share image, rendered with next/og
   apple-icon.tsx        home-screen icon for iOS
   manifest.ts, robots.ts, sitemap.ts, icon.svg
-scripts/                parser + cookie-sealing self-checks (npm run check)
+scripts/                parser, cookie-sealing and focus-timer self-checks (npm run check)
 ```
 
 A few details worth knowing:

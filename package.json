@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "check": "node --experimental-strip-types scripts/check-ics.ts && node --experimental-strip-types scripts/check-seal.ts"
+    "check": "node --experimental-strip-types scripts/check-ics.ts && node --experimental-strip-types scripts/check-seal.ts && node --experimental-strip-types scripts/check-focus.ts"
   },
   "dependencies": {
     "ical.js": "^2.2.1",
